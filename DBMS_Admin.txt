@@ -1,0 +1,413 @@
+==============================
+DBMS ADMINISTRATION CHEATSHEET
+==============================
+
+    + INSTALLATION
+    + DBMS STARTUP CMDS 
+    + CATALOGS
+    + BACKUP / RESTORE
+    + USER MANAGEMENT
+    + MONITORING / OPTIMIZATION
+    + TROUBLESHOOTING
+    + AUTOMATION
+    + PYTHON CONNECTORS
+
+
+
+0. INSTALLATION
+---------------
+    sudo apt-get install mysql-server 
+    sudo apt-get mysql-connector-python==8.0.31
+    sudo apt-get install postgresql
+    sudo apt-get install psycopg2
+
+
+
+1. DBMS STARTUP CMDS 
+--------------------
+
+## MySQL 
+
+    sudo -root service mysql status
+    
+    sudo -u root service mysql start
+    sudo -u root mysql
+    
+    SHOW DATABASES;         -- list 
+         FULL TABLES; [WHERE table_type = 'BASE TABLE';]  -- case sensitive: [BASE TYPE, VIEW, SYSTEM VIEW] / select a db first
+         ENGINES;
+	USE <db_name>;          -- connect db
+    DESCRIBE <table_name>;
+    CREATE DATABASE <db_name>;
+           TABLE <table_name>
+    SOURCE <script.sql>;    -- create db from script 
+
+    CREATE TABLE csv_tb (i INT NOT NULL, c CHAR(10) NOT NULL) ENGINE=CSV;
+	CREATE TABLE <new_table_name> AS
+		SELECT <column1>, <column2>, <...>
+		FROM <existing_table_name>
+		WHERE <condition>;
+
+    ALTER TABLE <table_name> ENGINE=InnoDB; 
+							 ADD column_name datatype;  
+							 DROP COLUMN column_name;
+							 RENAME COLUMN old_name TO new_name;
+							 ALTER COLUMN column_name datatype;
+    
+	EXEC sp_rename 'table_name.old_name', 'new_name', 'COLUMN';	-- only in SQL Server
+
+    \q 
+    
+    sudo -u root service mysql stop
+
+
+## PostgreSQL     
+	# Generated password: 36843624ff4146cab25aa07e5fee3f02
+
+    sudo -u root service postgresql status
+    
+    sudo -u root service postgresql start
+    sudo -u postgres psql
+    psql -h localhost -U postgres -c "psql command to execute"
+    
+    \l      -- list all db 
+    \dt     -- list all tables in current db
+    \du     -- list all users     
+    \dx     -- list installed extensions
+    \c <db_name>        -- connect db
+    \i <script.sql>     -- create db from script
+    \d <table_name>     -- show table structure 
+    \q      -- exit PostgreSQL
+    
+    sudo -u root service postgresql stop 
+
+
+## DB2
+    -- retrieve credentials from Db2 console and execute:
+    db2cli execsql -connString “DATABASE=<databasename>;UID=<username>;PWD=<password>;HOSTNAME=<hostname>;port=<port>;Security=SSL” -inputsql <schema.sql>
+    db2cli execsql -dsn production -user hcf49098 -passwd IQWR5dJfhK1cJpPf -inputsql star-schema.sql
+    
+    -- Create data source name (dsn) / Db2 instance
+    db2cli writecfg add -database <database_name> -host <hostname> -port <port_nb> -parameter "SecurityTransportMode=SSL"
+    db2cli writecfg add -dsn <dsn_name> -database <database_name> -host <hostname> -port <port_nb>
+    
+    -- Verify dsn
+    db2cli validate -dsn <dsn_name> -connect -user <username> -passwd <password>
+    
+
+
+2. CATALOGS
+-----------
+/*
+	+ Db2 = syscat.tables  
+	+ SQL Server = information_schema.tables 
+	+ Oracle = all_tables, user_tables
+*/
+
+## MySQL
+    USE information_schema;
+    SELECT table_name, engine FROM INFORMATION_SCHEMA.TABLES;
+    SELECT table_name, (data_length + index_length)/1024 AS 'Data size (kB)' FROM INFORMATION_SCHEMA.TABLES;
+    
+    -- Transaction log 
+    SHOW BINARY LOGS; 
+    mysqlbinlog -v <DB_Bin_Logs.000001>
+
+
+## PostgreSQL
+    SELECT tablename FROM pg_tables WHERE schemaname = <db_name>;
+
+## Db2 
+    SELECT * FROM SYSIBM.SYSTABLES;
+    SELECT name, tbname, tbcreator FROM SYSIBM.SYSCOLUMNS;
+
+    -- Db2 System catalog
+    select TABSCHEMA, TABNAME, CREATE_TIME from syscat.tables where TABSCHEMA = 'DB2_username';
+    select * from syscat.columns where tabname = 'tab_name';
+    select distinct(name), coltype, length from sysibm.syscolumns where tbname = 'tab_name';
+
+    -- Db2 system tables
+    SELECT * FROM SYSIBM.SYSTABLES;
+    SELECT * FROM SYSIBM.SYSTABLES WHERE CREATOR = 'HCF49098';
+    UPDATE SYSIBM.SYSTABLES SET CREATOR = 'MICHAEL' WHERE CREATOR = 'HCF49098';  -- Results in an error
+    DELETE FROM SYSIBM.SYSTABLES WHERE NAME = 'EMPLOYEES';  -- Results in an error
+
+    -- Transaction log
+    deb2fmtlog S0000002.LOG -replayonlywindow 
+
+
+
+
+3. BACKUP / RESTORE
+-------------------
+
+## MySQL
+
+    Command line backup and restore:
+        backup:     msqldump -u root db_name tb_name > bkp_name.sql
+        restore:    mysql -u root restored_db < bkp_name.sql 
+    Importing large dataset:
+        load data infile 'filename.csv' into table tb_name
+        mysqlimport db_name filename.csv 
+
+
+/* Make a logical backup and recovery */
+    mysqldump --host=127.0.0.1 --port=3306 --user=root --password <db> <table> > backup.sql
+    mysqldump --host=127.0.0.1 --port=3306 --user=root --password --flush-logs --delete-master-logs  --databases <db> > full_backup.sql
+    mysql --host=127.0.0.1 --port=3306 --user=root --password --execute="DROP TABLE <db.table>;"
+    mysql --host=127.0.0.1 --port=3306 --user=root --password <db> < backup.sql
+    
+/* Simulate a crash and point-in-time recovery w/ logical backup files */
+    docker exec mysql-mysql-1 rm -rf /var/lib/mysql/<db_name>
+    docker exec -it mysql-mysql-1 mysqladmin -p shutdown
+    mysql --host=127.0.0.1 --port=3306 --user=root --password --execute="SELECT * FROM <db.table>;"
+    mysql --host=127.0.0.1 --port=3306 --user=root --password --execute="SHOW BINARY LOGS;"
+    docker exec mysql-mysql-1 mysqlbinlog /var/lib/mysql/binlog.000003 /var/lib/mysql/binlog.000004 > logfile.sql
+    mysql --host=127.0.0.1 --port=3306 --user=root --password < full_backup.sql
+    mysql --host=127.0.0.1 --port=3306 --user=root --password < logfile.sql
+
+/* Simulate a crash and physical backup and restore */
+    docker cp mysql-mysql-1:/var/lib/mysql /home/project/mysql_backup   -- copy all server data within the container into IDE env 
+    docker exec mysql-mysql-1 rm -rf /var/lib/mysql/<db_name>           -- simulates data loss  
+    docker exec -it mysql-mysql-1 mysqladmin -p shutdown                -- restart mysql server to apply changes 
+    docker cp /home/project/mysql_backup/. mysql-mysql-1:/var/lib/mysql -- restore physical backup into server 
+    docker exec -it mysql-mysql-1 mysqladmin -p shutdown                -- restart mysql server to apply changes 
+
+
+## PostgreSQL
+/* Make a logical backup and recovery */
+    pg_dump --username=postgres --host=localhost --dbname=<db_name> [--table=<table_name>] > backup.sql
+    psql --username=postgres --host=localhost <table_restored> < backup.sql
+    pg_restore --username=postgres --host=localhost --dbname=<db_name> < backup_dump.tar
+
+
+
+
+4. USER MANAGEMENT
+------------------
+/* Manage access */
+    -- Create role 
+    CREATE ROLE <role_name>;
+    GRANT CONNECT ON DATABASE <db_name> TO <role_name>;
+    GRANT USAGE ON SCHEMA schema_name TO <role_name>;
+   
+    -- Create user 
+    CREATE USER <user_name> WITH PASSWORD 'user_password';
+    GRANT <role_name> TO <user_name>;
+ 
+    -- Set privileges 
+    GRANT SELECT, INSERT, DELETE, UPDATE ON ALL TABLES IN SCHEMA schema_name TO 'user/group/role';
+    GRANT SELECT ON db.table TO <user-role_name>;  -- grant permission for specific cmds: select, insert, update, delete 
+    GRANT CREATE TABLE TO <user-role_name>;
+    
+    GRANT CREATE PROCEDURE TO <user-role_name>;
+    GRANT VIEW ON db.proc TO <user-role_name>;     -- allow reading procedure but not run/write 
+    GRANT EXECUTE ON db.proc TO <user-role_name>;  -- allow to run procedure 
+    GRANT ALTER ON db.proc TO <user-role_name>;    -- allow to change procedure 
+
+    -- Revoke privileges
+    REVOKE CONNECT TO 'public/guest';           -- disable by-default permissions
+    REVOKE SELECT ON table_name FROM user_a;
+    REVOKE <role_name> FROM user_a;
+    DENY   ...                                  -- overwrite any previous or linked permissions
+
+/* Encryption */ 
+    SET @key_str = SHA2('My secret passphrase', 512);                   -- hash key 
+    USE db_name;
+    ALTER TABLE table_name MODIFY COLUMN col_name varbinary(255);       -- change col type to binary bytes
+    UPDATE table_name SET col_name = AES_ENCRYPT(col_name, @key_str);   -- encrypt data using AES protocol 
+    SELECT cast(AES_DECRYPT(col_name, @key_str) as char(255)) FROM table_name; -- decrypts
+
+
+
+5. MONITORING / OPTIMIZATION
+----------------------------
+## MySQL
+    use employees;
+    EXPLAIN SELECT * FROM employees WHERE hire_date >= '2000-01-01';
+    CREATE INDEX hire_date_index ON employees(hire_date);
+    SHOW INDEX FROM employees;
+    DROP INDEX hire_date_index ON employees;
+
+    EXPLAIN SELECT * FROM employees WHERE first_name LIKE 'C%' OR last_name LIKE 'C%';
+    CREATE INDEX first_name_index ON employees(first_name);
+    CREATE INDEX last_name_index ON employees(last_name);
+    EXPLAIN SELECT * FROM employees WHERE first_name LIKE 'C%' UNION ALL SELECT * FROM employees WHERE last_name LIKE 'C%';
+
+    OPTIMIZE TABLE
+
+## PostgreSQL
+    SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity;
+    SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity WHERE state = 'active';
+    SELECT datname, tup_inserted, tup_updated, tup_deleted, tup_fetched, tup_returned FROM pg_stat_database;
+
+    CREATE EXTENSION pg_stat_statements;  -- Track statistics 
+    ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';  -- then restart PostgreSQL for changes to take effect 
+    psql --username=postgres --host=localhost
+    \connect demo 
+    \dx  -- list installed extensions  
+    show shared_preload_libraries;
+    \x -- enables expanded display formatting
+    SELECT dbid, query, total_exec_time FROM pg_stat_statements; 
+    SELECT oid, datname FROM pg_database;
+
+    DROP EXTENSION pg_stat_statements;    
+    ALTER SYSTEM RESET shared_preload_libraries;
+
+    \d aircrafts_data  -- display data types in table aircrafts_data
+    DROP VIEW aircrafts;
+    ALTER TABLE aircrafts_data ALTER COLUMN range TYPE smallint;
+
+    show autovacuum;
+    SELECT relname, n_dead_tup, last_autoanalyze, autovacuum_count FROM pg_stat_user_tables;
+
+    VACUUM
+    REINDEX
+
+## Db2
+    RUNSTATS  
+    REORG      
+
+
+
+
+6. TROUBLESHOOTING
+------------------
+
+## PostgreSQL
+    
+    # Any changes to postgresql.conf requires restarting server
+    postgresql.conf> logging collector = on    # enables error capture (stderr, csvlog)
+                     max_connections = <int>   # set max concurrent connections to db < error: too many connections
+                     shared_buffers = <int>    # when increasing nb of connections, must increase buffer size8
+                                                 4 connections -> 128kB; 100 connections -> 126MB
+                     work_mem = <int>          # when increasing 64kB->4MB, improves perf for slow queries
+                     maintenance_work_mem = <int> # 1MB->64MB 
+
+    PostgreSQL>      SHOW logging_collector; 
+                     SHOW log_directory;
+                     
+                     \connect db_name
+                     \timing    # time cmds exec 
+                     
+                     # slow query for testing purpose
+                     UPDATE boarding_passes SET ticket_no = ticket_no, flight_id = flight_id, boarding_no = boarding_no, seat_no = seat_no;
+                     
+                     # Simulate server crash by opening new CLI instances (-> too many connections err)
+
+
+
+
+7. AUTOMATION (backup/restore)
+------------------------------
+
+## MySQL (using shell scripts)
+-- Ex 1
+    start_mysql
+    sudo nano ~/.my.cnf  # add password to connect config script
+    mysql
+
+    CREATE DATABASE sakila;
+    USE sakila;
+    SOURCE sakila_mysql_dump.sql;
+    SHOW FULL TABLES WHERE table_type = 'BASE TABLE';
+
+    # Bash script 
+    ''' don't forget to add exec permission to the script: sudo chmod u+x+r sqlbackup.sh '''
+        #!/bin/sh
+        # Set the database name to a variable. 
+        DATABASE='sakila'
+
+        # This will be printed on to the screen. In the case of cron job, it will be printed to the logs.
+        echo "Pulling Database: This may take a few minutes"
+
+        # Set the folder where the database backup will be stored
+        backupfolder=/home/theia/backups
+
+        # Number of days to store the backup 
+        keep_day=30
+
+        sqlfile=$backupfolder/all-database-$(date +%d-%m-%Y_%H-%M-%S).sql
+        zipfile=$backupfolder/all-database-$(date +%d-%m-%Y_%H-%M-%S).gz
+
+        # Create a backup
+        if mysqldump  $DATABASE > $sqlfile ; then
+        echo 'Sql dump created'
+            # Compress backup 
+            if gzip -c $sqlfile > $zipfile; then
+                echo 'The backup was successfully compressed'
+            else
+                echo 'Error compressing backupBackup was not created!' 
+                exit
+            fi
+            rm $sqlfile 
+        else
+        echo 'pg_dump return non-zero code No backup was created!' 
+        exit
+        fi
+
+        # Delete old backups 
+        find $backupfolder -mtime +$keep_day -delete
+
+    # Truncate tables in corrupted db and restore script
+    ''' don't forget: sudo chmod u+x+r truncate.sh '''
+        #!/bin/sh
+        DATABASE=sakila
+        mysql -Nse 'show tables' sakila | \
+            while read table; do mysql --host=127.0.0.1 --port=3306 \
+            -e "use sakila;SET FOREIGN_KEY_CHECKS=0;truncate table $table;SET FOREIGN_KEY_CHECKS=1;" ;done
+    # execute script
+    sudo ./truncate.sh
+    
+    # Restore database
+    ls -l /home/theia/backups
+    gunzip /home/theia/backups/<backup zip file name>
+    mysql sakila < /home/theia/backups/<backup sql file name>
+
+    # Cleanup backups folder
+    sudo rm -rfv /home/theia/backups
+
+-- Ex 2
+# Backup script
+    dbname=$(mysql -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '$1'" | grep $1)
+
+    if [ ! -d $2 ]; then 
+        mkdir $2
+    fi
+
+    if [ $1 == $dbname ]; then
+        sqlfile=$2/$1-$(date +%d-%m-%Y).sql
+        if mysqldump  $1 > $sqlfile ; then
+            echo 'Sql dump created'
+        else
+            echo 'Error creating backup!'
+        fi
+    else
+        echo "Database doesn't exist"
+    fi
+
+# Restore script
+    if [ -f $2 ]; then 
+        dbname=$(mysql -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '$1'" | grep $1)
+        if [ $1 != $dbname ]; then
+            echo "Created DB as it didn't exist"
+            mysql -e "Create database $1"
+        fi
+        mysql -e "use $1"
+        mysql $1 < $2
+        sudo rm -rfv /home/theia/backups
+    else
+        echo "File doesn't exist"
+    fi
+
+
+## Scheduling jobs using Cron
+    $ crontab -e    # opens editor
+    job syntax: m h dom mon dow command              ->  30 15 * * 0 date >> sundays.txt    //     */2 * * * >> every 2 mins 
+                minute hour dayofmonth month dayofweek
+    $ crontab -l    # lists scheduled jobs 
+    $ crontab -r    # removes all jobs
+
+
+
+

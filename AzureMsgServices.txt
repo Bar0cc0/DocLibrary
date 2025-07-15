@@ -1,0 +1,76 @@
+Azure messaging services:
+- Service Bus queues := messaging e.g. placing/scheduling orders handled by decoupled programs
+			  topics := use filters on the same message to distribute to multiple subscribers
+- Service Grid := discrete facts, point-in-time events, integrating with external apps
+				  event routing service for serverless apps, publish/subscribe model
+- Events Hub := time series facts from sensors in realtime
+- IoT Hub := subset of events hub for IoT devices
+- Logic Apps := no-code workflow automation service for integrating apps, data, services, and systems
+
+Service bus = 	PubSub message queue-oriented broker, 
+				PaaS, 
+				JMS 2 + AMQP 1 standards compliant,
+				Azure SDK
+ 
+AMQP protocol can be implemented thru Apache Qpid
+
+Service Bus Namespace = virtual broker 
+- queues = point-to-point communication, one producer and one consumer
+- topics = publish/subscribe communication, one producer and multiple consumers
+
+queue = exclusive assignment of jobs thru a sequential log
+queue attributes:
+- Max msg size = 1MB
+- Max queue size = 80GB
+- Max consumers = 5000 (msg are locked exclusively to one consumer until they are processed)
+
+sessions = subqueues / multiplexing, order seq of msg sharing an id 
+		   => consumer acquire an exclusive lock on the entire session
+
+Transactions = atomic, scope: between consumer and queue
+
+Topic = subscription associated with a filter/id, topics are named multicast distribution points for messages
+
+Authorization:
+- Active Directory RBAC
+- Shared Access Signatures (SAS) with entity policy
+
+
+-------------
+Optimization (performance/cost):
+- partitioning = multiple queues for parallel processing
+- balance storage costs and access frequency
+- ScaleSet = auto-scaling of VMs as workload increases
+- Azure Functions = serverless compute service for event-driven workloads scalability
+- Azure Batch = run parallelized workloads (e.g. ML) / auto-scaling / job scheduling / orchestration of tasks
+- SQL = batch, parallelism, partitioning, columnstore indexes (OLAP), rowstore indexes + in-memory tables (OLTP)
+- Monitor index usage - Use sys.dm_db_index_usage_stats to identify unused indexes
+
+Security/Networking/Observability:
+- resource groups = logical containers for resources
+- security groups = control access to resources
+- subcription = billing unit for Azure resources; separate resources into different subscriptions
+- Azure AD = identity management
+- SAS = shared access signature
+- gateways = secure access to on-premises resources; route-based or policy-based
+- VNet = virtual network for secure communication between resources
+- Azure Firewall = network security service for monitoring and controlling traffic
+- Security Center = unified security management and threat protection
+- Sentinel = cloud-native SIEM for intelligent security analytics
+- Azure Monitor = collect, analyze, and act on telemetry data from Azure resources
+- Application Insights = monitor performance and usage of applications
+- Log Analytics = collect and analyze log data from various sources
+- Azure Advisor = personalized best practices and recommendations for Azure resources
+- Azure Policy = enforce organizational standards and assess compliance at scale
+- Azure Blueprints = define and manage a set of resources and policies for compliance
+- Azure Resource Manager = manage resources in a consistent way
+
+Data governance:
+- data discovery
+- access control
+- data lineage 
+- auditing
+- cataloging
+- data quality
+
+
