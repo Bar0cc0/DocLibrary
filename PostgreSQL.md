@@ -1029,3 +1029,95 @@ CREATE EXTENSION pg_trgm;               -- Trigram matching for text search
 CREATE EXTENSION timescaledb;           -- Time-series data
 CREATE EXTENSION pgcrypto;              -- Cryptographic functions
 ```
+
+
+
+## 12. Fine-Tuning and Optimization
+## Common SQL Tests
+
+### Unit Tests
+```sql
+-- Unit test for a function
+CREATE OR REPLACE FUNCTION test_my_function(query_to_test text, expected_output text)
+RETURNS void AS $$
+DECLARE
+    result text;
+BEGIN
+    result := EXEC query_to_test;
+    IF result != 'expected_output' THEN
+        RAISE EXCEPTION 'Test failed: %', result;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Unit test for an assertion
+CREATE TABLE test_results (
+	test_name TEXT,
+	result TEXT,
+	message TEXT,
+	executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE OR REPLACE FUNCTION assert_equals(test_name TEXT, actual INT, expected INT, msg TEXT)
+RETURNS VOID AS $$
+BEGIN
+    INSERT INTO test_results (test_name, result, message)
+    VALUES (
+        test_name,
+        CASE WHEN actual = expected THEN 'PASS' ELSE 'FAIL' END,
+        FORMAT('Expected: %s, Got: %s. %s', expected, actual, msg)
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Run the unit test
+DO $$
+BEGIN
+    PERFORM test_my_function('SELECT my_function(''input'')', 'expected_output');
+	PERFORM assert_equals('Test My Function', my_function('input'), 'expected_output', 'Function did not return expected output');
+	RAISE NOTICE 'Unit test completed successfully';
+END;
+$$;
+
+Test Tools / Frameworks by Platform
+```
+| Database       | Unit Test Tool                                    | Integration Option                 |
+| -------------- | ------------------------------------------------- | ---------------------------------- |
+| **SQL Server** | [tSQLt](http://tsqlt.org)                         | SSIS test harness, pytest + pyodbc |
+| **PostgreSQL** | `pgTAP`, `pytest-postgresql`                      | DBT tests, integration via Python  |
+| **Oracle**     | `utPLSQL`                                         | SQLcl, Jenkins pipelines           |
+| **MySQL**      | DIY or [MyTAP](https://github.com/ewdurbin/MyTAP) | Python-based testing               |
+| **Snowflake**  | DBT + dbt-expectations                            | Snowpark or Python unit tests      |
+| **dbt**        | `dbt test`, `schema.yml`, `dbt-utils`             | dbt + CI/CD integration            |
+
+### Assertions
+```sql
+-- Assert that all orders have a valid customer
+SELECT CASE
+  WHEN NOT EXISTS (
+    SELECT 1
+    FROM orders o
+    LEFT JOIN customers c ON o.customer_id = c.id
+    WHERE c.id IS NULL
+  )
+  THEN 'PASS' ELSE 'FAIL'
+END AS test_result;
+
+-- Assert expected vs actual match exactly
+SELECT 'FAIL' AS test_result
+WHERE EXISTS (
+  (SELECT id FROM actual_table)
+  EXCEPT
+  (SELECT id FROM expected_table)
+);
+
+-- Assert that only one user is marked as admin
+SELECT 'PASS' AS test_result
+FROM users
+HAVING COUNT(*) FILTER (WHERE is_admin = TRUE) = 1;
+
+-- Assert that no NULL values exist in a column
+IF EXISTS (
+  SELECT 1 FROM customers WHERE email IS NULL
+)
+  THROW 50001, 'Test failed: NULL emails found', 1;
+```
