@@ -126,12 +126,6 @@ private void Form1_Load(object sender, EventArgs e)
 ## Handling DPI
 
 ```csharp
-using System;
-using System.Runtime.InteropServices;
-using System.Windows.Forms;
-using System.Drawing;
-using System.Text;
-using System.Windows.Forms.VisualStyles;
 
 // In Program.cs
 // Enable DPI awareness for the application
@@ -140,110 +134,145 @@ Application.SetHighDpiMode(HighDpiMode.SystemAware);
 Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 
 // In Form1 
-    public partial class Form1 : Form
-    {
-        // DPI awareness context constant for per-monitor DPI awareness
-        // The value -4 corresponds to DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 in Windows 10 and later
-        private static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using System.Drawing;
+using System.Text;
+using System.Windows.Forms.VisualStyles;
 
-        // Sets the DPI awareness context for the process per-monitor
-        [DllImport("user32.dll")]
-        private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext); 
-
-        public Form1()
-        {
-            InitializeComponent();
-
-            // Enable DPI awareness for the form
-            this.AutoScaleMode = AutoScaleMode.Dpi;
-
-            // Subscribe to DPI changed events
-            this.DpiChanged += Form1_DpiChanged;
-
-            // Set up DPI awareness when handle is created
-            this.HandleCreated += (s, e) => SetProcessDpiAwareness();
-        }
-
-        // This method sets the DPI awareness context for the process
-        private void SetProcessDpiAwareness()
-        {
-            // Check if the OS version supports per-monitor DPI awareness
-            if (Environment.OSVersion.Version.Major >= 6)
-            {
-                try
-                {
-                    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Failed to set DPI awareness: {ex.Message}");
-                }
-            }
-        }
-
-        private void Form1_DpiChanged(object? sender, DpiChangedEventArgs e)
-        {
-            // Fix property names to match .NET 9 API
-            MessageBox.Show($"DPI changed from {e.DeviceDpiOld} to {e.DeviceDpiNew}.",
-                "DPI Change Detected", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-}
-```
-
-
-## Best Practices
-
-1. **Design for 100% scaling first** then test at other scales
-2. **Test on multiple displays** with different resolutions and DPI settings
-3. **Use relative measurements** rather than absolute pixel values
-4. **Implement dynamic layout logic** in the Resize event handler
-5. **Consider using the SuspendLayout/ResumeLayout** methods for complex UI changes
-6. **Test your application at runtime** on different screen configurations
-
-
-
-
-
-# Windows Forms Debugging
-
-```csharp
-namespace WinFormsApp1
+public partial class Form1 : Form
 {
-	public partial class Form1 : Form
+	// DPI awareness context constant for per-monitor DPI awareness
+	// The value -4 corresponds to DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 in Windows 10 and later
+	private static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
+
+	// Sets the DPI awareness context for the process per-monitor
+	[DllImport("user32.dll")]
+	private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
+	public Form1()
 	{
-		public Form1()
-		{
-			InitializeComponent();
-		}
+		InitializeComponent();
 
-		private void button1_Click(object sender, EventArgs e)
-		{
-			label1.Text = "Button clicked!";
-			
-			// Call the hierarchy display function here to visualize on button click
-			DisplayControlHierarchy();
-		}
+		// Enable DPI awareness for the form
+		this.AutoScaleMode = AutoScaleMode.Dpi;
 
-		private void tableLayoutPanel1_Paint(object sender, PaintEventArgs e)
-		{
+		// Subscribe to DPI changed events
+		this.DpiChanged += Form1_DpiChanged;
+	}
 
-		}
-
-		// Add this to visualize control hierarchy at runtime
-		private void DisplayControlHierarchy()
+	// This method sets the DPI awareness context for the process
+	private void SetProcessDpiAwareness()
+	{
+		// Check if the OS version supports per-monitor DPI awareness
+		if (Environment.OSVersion.Version.Major >= 6)
 		{
-			StringBuilder hierarchy = new StringBuilder();
-			BuildControlHierarchy(this, hierarchy, 0);
-		MessageBox.Show(hierarchy.ToString());
-		}
-
-		private void BuildControlHierarchy(Control control, StringBuilder builder, int indent)
-		{
-			builder.AppendLine($"{new string(' ', indent * 2)}{control.GetType().Name}: {control.Name}");
-			foreach (Control child in control.Controls)
+			try
 			{
-				BuildControlHierarchy(child, builder, indent + 1);
+				SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+			}
+			catch (Exception ex)
+			{
+				MessageBox.Show($"Failed to set DPI awareness: {ex.Message}");
 			}
 		}
 	}
+
+	private void Form1_DpiChanged(object? sender, DpiChangedEventArgs e)
+	{
+		// Handle DPI change event
+		try
+		{
+			// Log that event fired
+			Console.WriteLine($"DPI changed event fired: {e.DeviceDpiOld} -> {e.DeviceDpiNew}");
+
+			MessageBox.Show($"DPI changed from {e.DeviceDpiOld} to {e.DeviceDpiNew}.",
+				"DPI Change Detected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+		}
+		catch (Exception ex)
+		{
+			MessageBox.Show($"Error in DPI handler: {ex.Message}");
+		}
+
+		// Update the form's controls or layout to adapt to the new DPI
+		try
+		{
+			// Calculate scaling factor between old and new DPI
+			float scaleFactor = (float)e.DeviceDpiNew / e.DeviceDpiOld;
+
+			// Scale the form's font
+			this.Font = new Font(this.Font.FontFamily, this.Font.Size * scaleFactor, this.Font.Style);
+
+			// Scale all controls
+			ScaleControlsOnDpiChange(this.Controls, scaleFactor);
+		}
+		catch (Exception ex)
+		{
+			MessageBox.Show($"Error adapting controls to new Dpi: {ex.Message}");
+		}
+
+	}
+
+	protected override void OnHandleCreated(EventArgs e)
+	{
+		base.OnHandleCreated(e);
+		// Force Windows to recognize this window for DPI change notifications
+		SetProcessDpiAwareness();
+		Console.WriteLine($"Window created with DPI: {this.DeviceDpi}");
+	}
+
+
+	// Recursive method to scale all controls in the hierarchy
+	private void ScaleControlsOnDpiChange(Control.ControlCollection controls, float scaleFactor)
+	{
+		foreach (Control control in controls)
+		{
+			// Check if the control has a font that's different from its parent
+			bool hasCustomFont = control.Parent != null &&
+								control.Font != null &&
+								!control.Font.Equals(control.Parent.Font);
+
+			if (hasCustomFont || control.Parent == null)
+			{
+				control.Font = new Font(
+					control.Font.FontFamily,
+					control.Font.Size * scaleFactor,
+					control.Font.Style);
+			}
+
+			// Handle specific control types that need special scaling
+			if (control is Label || control is Button || control is TextBox)
+			{
+				// Scale control size if it's not anchored/docked
+				if (control.Anchor == (AnchorStyles.Top | AnchorStyles.Left))
+				{
+					control.Width = (int)(control.Width * scaleFactor);
+					control.Height = (int)(control.Height * scaleFactor);
+				}
+				
+				// Scale control location
+				control.Left = (int)(control.Left * scaleFactor);
+				control.Top = (int)(control.Top * scaleFactor);
+			}
+
+			// Recursively process child controls
+			if (control.Controls.Count > 0)
+			{
+				ScaleControlsOnDpiChange(control.Controls, scaleFactor);
+			}
+		}
+	}
+
+	// Controls affected by DPI changes
+	private void button1_Click(object sender, EventArgs e)
+	{
+		label1.Text = "Button clicked!";
+	}
+
+	private void tableLayoutPanel1_Paint(object sender, PaintEventArgs e)
+	{
+
+	}
 }
+
