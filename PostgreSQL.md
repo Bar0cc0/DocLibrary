@@ -1,4 +1,4 @@
-# PostgreSQL Comprehensive Cheat Sheet
+# PostgreSQL Cheat Sheet
 
 https://www.postgresql.org/docs/current/index.html  
 https://www.postgresql.org/docs/current/app-psql.html
@@ -35,22 +35,21 @@ https://www.postgresql.org/docs/current/app-psql.html
 	7.5. [PL/Python](#pl-python)  
 	7.6. [Inheritance](#inheritance)  
 
-8. [Performance Optimization](#8-performance-optimization)   
+8. [Table Access Optimization](#8-table-access-optimization)   
 	8.1. [Indexing](#indexing)  
-	8.2. [Partitioning](#partitioning)  
-	8.3. [Tablespace Management](#tablespace-management)  
-	8.4. [Tuning](#tuning)  
-	8.5. [Query Optimization](#monitoring-and-diagnostics)
-	
-9. [Maintenance and Monitoring](#9-maintenance-and-monitoring)  
-	9.1. [Routine Maintenance](#routine-maintenance)  
-	9.2. [Monitoring and Diagnostics](#monitoring-and-diagnostics)  
+	8.2. [Clustering](#clustering)
+	8.3. [Partitioning](#partitioning)  
+	8.4. [Tablespace](#tablespace)  
 
-10. [High Availability and Replication](#10-high-availability-and-replication)
+9. [High Availability and Replication](#9-high-availability-and-replication)
+	9.1. [Logical Replication](#logical-replication)  
+	9.2. [Interprocess Communication](#interprocess-communication)
+
+10. [Testing](#10-testing)  
+	10.1. [Unit Tests](#unit-tests)  
+	10.2. [Assertions](#assertions)
 
 11. [Additional Tools and Resources](#11-additional-tools-and-resources)
-
-
 
 
 ## 1. Installation and Setup
@@ -381,21 +380,12 @@ WITH (
 
 ### Concurrent Access Control
 #### Isolation Levels
-- read committed (default, most permissive):
-	- see snapshot of data as of the start of the transaction
-	- can see the effect of commands executed as of the beginning of its own transaction even though they are not committed yet
-	- prevents dirty reads (reading uncommitted data)
-	- does not prevent non-repeatable reads (data can change between reads in the same transaction)
-- repeatable read:
-	- only sees data committed before the transaction began
-	- does not see changes made by other transactions after it started
-	- prevents dirty reads and non-repeatable reads
-	- can lead to phantom reads (new rows added by other transactions that match the query condition)
-- serializable (strictest):
-	- behaves like a single-threaded transaction
-	- does not see changes made by other transactions after it started
-	- prevents phantom reads (new rows added by other transactions that match the query condition)
-	- can lead to serialization failures if concurrent transactions conflict
+
+| Isolation Level | Data Visibility | Dirty Reads | Non-Repeatable Reads | Phantom Reads | Special Characteristics |
+|-----------------|-----------------|-------------|----------------------|---------------|-------------------------|
+| **Read Committed** (default) | Snapshot at start of transaction; can see own uncommitted changes | Prevented | Possible | Possible | Most permissive level |
+| **Repeatable Read** | Only data committed before transaction began | Prevented | Prevented | Possible | Does not see changes by other transactions after start |
+| **Serializable** | Only data committed before transaction began | Prevented | Prevented | Prevented | Behaves like single-threaded transaction; can lead to serialization failures if concurrent transactions conflict |
 
 ```sql
 -- Isolation levels
@@ -411,6 +401,65 @@ SET TRANSACTION ISOLATION LEVEL SERIALIZABLE READ WRITE;
 -- Acquire an exclusive lock on a row for updates/deletes/selects by other transactions until the transaction is committed
 SELECT * FROM accounts WHERE user_id = 123 FOR UPDATE;  -- Exclusive lock
 SELECT * FROM accounts WHERE user_id = 123 FOR SHARE;   -- Shared lock
+```
+
+### Advanced Querying / Algorithms
+```sql
+-- Recursive CTEs (with cycle detection)
+-- Use cases: graph traversal / tree structures
+WITH RECURSIVE employee_tree AS (
+	-- Base case
+	SELECT id, name, manager_id, ARRAY[id] AS path
+	FROM employees
+	WHERE id = $1  -- starting employee (value passed as a parameter)
+
+	UNION ALL
+	-- Recursive case
+	
+	SELECT e.id, e.name, e.manager_id, et.path || e.id
+	FROM employees e
+	
+	-- Join with the previous level of the hierarchy
+	JOIN employee_tree et ON e.manager_id = et.id
+	
+	-- cycle prevention
+	WHERE NOT e.id = ANY(et.path) -- Prevent cycles in the hierarchy 
+);
+
+
+-- Recursive CTE: Render breadcrumb navigation (Electronics > Computers > Laptops)
+WITH RECURSIVE category_path AS (
+	SELECT id, name, parent_id, name::TEXT AS path
+	FROM categories
+	WHERE parent_id IS NULL
+
+	UNION ALL
+
+	SELECT c.id, c.name, c.parent_id, cp.path || ' > ' || c.name
+	FROM categories c
+	JOIN category_path cp ON c.parent_id = cp.id
+);
+
+
+-- Dynamic feature extraction
+-- Use cases: extracting elements from JSONB arrays (e.g., flatten tags) on GIN indexed columns
+CREATE INDEX idx_products_tags ON products USING GIN (tags);
+SELECT p.id, p.name, tag.value AS tag
+FROM products p,
+    LATERAL jsonb_array_elements_text(p.tags::jsonb) AS tag
+WHERE tag.value = $1;  -- filter by tag (value passed as a parameter)
+
+-- LEFT JOIN LATERAL 
+SELECT c.id, c.name, c.email, o.id AS order_id, o.total_amount
+FROM customers c
+LEFT JOIN LATERAL (
+    SELECT id, total_amount
+    FROM orders
+    WHERE o.customer_id = c.id
+    ORDER BY created_at DESC
+    LIMIT 1		-- Prevents nested loop joins
+) o ON true; 	-- Prevents NULL values to be returned
+
 ```
 
 ## 7. Programming
@@ -605,21 +654,31 @@ $$ LANGUAGE plpgsql;
 -- Create a trigger that calls the function on UPDATE
 CREATE TRIGGER product_update_trigger
     AFTER UPDATE ON products            -- [BEFORE, AFTER] [INSERT, UPDATE, DELETE, TRUNCATE] ON {schema}.{table_name}
-    FOR EACH ROW
-    WHEN (OLD.* IS DISTINCT FROM NEW.*) -- Optional condition to check if any column has changed
+    FOR EACH ROW						-- or FOR EACH STATEMENT
+    WHEN (OLD.* IS DISTINCT FROM NEW.*) -- Only if the row has changed; OLD/NEW are only accessible for EACH ROW triggers
     EXECUTE FUNCTION notify_product_update();
 ```
 
 ### PL/Python
-Prerequisites for using PL/Python: 
+#### Prerequisites for using PL/Python: 
 1. Install the PostgreSQL Python extension (`postgresql-plpython3`)
 2. Enable the language in your database: `CREATE EXTENSION plpython3u;`
-3. Install required Python packages in your PostgreSQL server's Python environment
+3. Install required Python packages in the server's Python environment
 
+```bash
+# Install PL/Python extension
+sudo apt-get install postgresql-plpython3-<version>  # Linux
+
+# Enable PL/Python in the database
+sudo -u postgres psql -c "CREATE EXTENSION plpython3u;"
+
+# Install pandas and numpy in the PostgreSQL Python environment
+sudo -u postgres psql -c "SELECT plpython3u_install('pandas');"
+sudo -u postgres psql -c "SELECT plpython3u_install('numpy');"
+```
+
+#### Example
 ```sql
--- Enable PL/Python
-CREATE EXTENSION plpython3u;
-
 -- Create Python function
 CREATE OR REPLACE FUNCTION py_analyze_data(
     table_name TEXT,
@@ -684,14 +743,14 @@ CREATE TABLE digital_products (
 SELECT * FROM ONLY products;	-- Returns only rows from the parent table
 SELECT * FROM products; 		-- Returns rows from both parent and child tables
 
-SELECT p.tableoid, p.name FROM products p -- Returns the OID (object internal identifier) of the table where each row comes from
-SELECT p.tableoid::regclass, p.name FROM products p; -- Returns the name of the table where each row comes from
-SELECT r.relname, p.name 
+SELECT p.tableoid, p.name FROM products p 				-- Returns the OID (object internal identifier) of the table where each row comes from
+SELECT p.tableoid::regclass, p.name FROM products p; 	-- Returns the name of the table where each row comes from
+SELECT r.relname, p.name 		-- Returns the name of the table where each row comes from; equivalent to the previous query
 	FROM products p, pg_class r -- pg_class contains information about tables, indexes, sequences, etc.
-	WHERE p.tableoid = r.oid; -- Returns the name of the table where each row comes from; equivalent to the previous query
+	WHERE p.tableoid = r.oid; 	
 ```
 
-## 8. Performance Optimization
+## 8. Table Access Optimization
 
 ### Indexing
 Optimize queries that contain WHERE clauses, JOIN conditions, or ORDER BY clauses.
@@ -718,9 +777,6 @@ CREATE INDEX idx_products_id ON products USING HASH (id);
 -- BRIN index for range queries
 CREATE INDEX idx_products_created_at ON products USING BRIN (created_at);
 
--- Cluster a table using an index = physically reorder data to match the index order
-CLUSTER products USING idx_products_name;
-
 --  Reindex a specific index
 REINDEX INDEX idx_products_name;
 
@@ -728,10 +784,19 @@ REINDEX INDEX idx_products_name;
 REINDEX TABLE products;
 ```
 
+### Clustering
+```sql
+-- Cluster a table using an index = physically reorder data to match the index order
+CLUSTER products USING idx_products_name;
+
+-- Rebuild the index after clustering
+REINDEX INDEX idx_products_name;
+```
+
+
 ### Partitioning
 When the table is large and most of the heavily accessed rows are in a specific range of values.
 Allows for old data removal without disrupting the physical ordering.
-Best choice is to partition by the column or set of columns which most commonly appear in WHERE clauses.
 
 ```sql
 -- Enable pruning to skip scanning partitions that do not match the query conditions.
@@ -744,23 +809,87 @@ CREATE TABLE sales (
 	amount DECIMAL(10, 2) NOT NULL
 ) PARTITION BY RANGE (sale_date); -- BY LIST, HASH, or RANGE
 
--- Create a partition for specific range
+-- Create partitions for specific range
 CREATE TABLE sales_2023 PARTITION OF sales
 	FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
+CREATE TABLE sales_2024 PARTITION OF sales
+	FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
 
--- Create an index on the matching partition
-CREATE INDEX idx_sales_date ON sales (sale_date);
+-- Create a default partition to catch all unmatched rows (otherwise an error is raised)
+CREATE TABLE sales_default PARTITION OF sales DEFAULT;
+
+-- Insert data into the partitioned table
+INSERT INTO sales (sale_date, amount) VALUES ('2023-06-15', 100.00);
+INSERT INTO sales (sale_date, amount) VALUES ('2024-06-15', 100.00);
+
+-- Update data in a specific partition
+-- Fails if updates the partition key (sale_date) to a value outside the partition range 
+-- => deletes the row from the partition and inserts it into the correct partition
+UPDATE sales_2023 SET amount = 150.00 WHERE sale_date = '2023-06-15';
+
+-- PostgreSQL does not support global indexes on partitioned tables
+-- => Create an index on the matching partition
 CREATE INDEX idx_sales_2023_date ON sales_2023 (sale_date);
 
--- Remove a partition
+-- Archiving partitions
+-- Detach a partition
 ALTER TABLE sales DETACH PARTITION sales_2023;
+-- Upload to an archive bucket (e.g., S3)
+pg_dump -t sales_2023 -Fc -f sales_2023.dump; -- -Fc creates a custom-format backup (compressed, restorable)
+aws s3 cp sales_2023.dump s3://your-archive-bucket/sales_2023.dump 
+--or to a data lake:
+COPY sales_2023 TO '/path/to/sales_2023.parquet' WITH (FORMAT 'parquet', COMPRESSION 'gzip'); 
+-- Remove the partition from the database
+DROP TABLE sales_2023;
 
 -- Querying a table using on-the-fly partitioning
 SELECT * OVER (PARTITION BY sale_date) FROM sales; -- Window function to calculate aggregates over partitions
 
+-- Vacuum all partitions
+DO $$
+DECLARE
+    partition TEXT;
+BEGIN
+    FOR partition IN
+        SELECT tablename FROM pg_tables
+        WHERE tablename LIKE 'sales_%'
+    LOOP
+        EXECUTE format('VACUUM ANALYZE %I', partition);
+    END LOOP;
+END $$;
+
+-- List all partitions of a partitioned table
+SELECT inhrelid::regclass AS partition_name
+FROM pg_inherits
+WHERE inhparent = 'sales'::regclass;
+
+-- Check partitioning type and bounds
+SELECT relname AS partition_name, relkind AS partition_type, pg_get_expr(relpartbound, oid) AS partition_bound
+FROM pg_class
+JOIN pg_partitioned_table ON partrelid = oid
+WHERE relname = 'sales' OR relname LIKE 'sales_%';
+
+-- Check partitioning statistics
+SELECT relname AS partition_name,
+	   pg_size_pretty(pg_total_relation_size(oid)) AS partition_size,
+	   n_live_tup AS row_count
+FROM pg_class
+WHERE relname LIKE 'sales_%';
+
+-- Explain query plan for partitioned tables; partition filter = number of partitions that were scanned => parallel execution?
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM sales WHERE sale_date BETWEEN '2023-01-01' AND '2024-12-31';
+
+-- Multi-level partitioning
+-- Create a partitioned table by RANGE on sale_date ('sales') and then by LIST on region
+CREATE TABLE sales_2023_region1 PARTITION OF sales
+	FOR VALUES FROM ('2023-01-01') TO ('2024-01-01') 
+	PARTITION BY LIST (region);
+CREATE TABLE sales_2023_region1_north PARTITION OF sales_2023_region1
+	FOR VALUES IN ('CA');
+
 ```
 
-### Tablespace Management
+### Tablespace
 ```sql
 -- Create a tablespace
 CREATE TABLESPACE my_tablespace LOCATION '/path/to/tablespace';
@@ -787,130 +916,10 @@ SELECT pg_size_pretty(pg_tablespace_size('my_tablespace')) AS tablespace_size;
 SELECT pg_size_pretty(pg_total_relation_size('my_table')) AS table_size;
 ```
 
-### Tuning
-Profile and optimize PostgreSQL performance by adjusting configuration parameters based on workload and hardware resources.
-```sql
--- Adjust configuration parameters for performance tuning
-ALTER SYSTEM SET work_mem = '64MB';          -- Memory used for sorting and hashing operations
-ALTER SYSTEM SET maintenance_work_mem = '256MB'; -- Memory used for maintenance operations like VACUUM, CREATE INDEX, etc.
-ALTER SYSTEM SET shared_buffers = '1GB';     -- Memory used for caching data in shared memory
-ALTER SYSTEM SET effective_cache_size = '2GB'; -- Memory available for caching data in the OS and PostgreSQL
-ALTER SYSTEM SET max_parallel_workers = 4;   -- Maximum number of parallel workers for query execution
-ALTER SYSTEM SET max_parallel_workers_per_gather = 2; -- Maximum number of parallel workers
--- Restart PostgreSQL to apply changes
-```
 
 
-## 9. Maintenance and Monitoring
 
-### Routine Maintenance
-```sql
--- 1. Vacuuming (for heavily updated tables, i.e. lots of row versions)
--- Note: Vacuum daemon (autovacuum) runs automatically to reclaim storage and maintain database health.
-VACUUM;      -- cleans up dead tuples (i.e. obsolete rows) and reclaims storage
-VACUUM FULL; -- reclaims more space by rewriting the entire table, but locks the table during the operation (i.e. slow)
-ANALYZE;     -- updates statistics for the query planner to optimize query execution
-
--- 2. Reindexing
-REINDEX TABLE my_table;  -- rebuilds the index for a specific table
-REINDEX DATABASE my_database;  -- rebuilds all indexes in a specific database
-REINDEX SYSTEM my_database;  -- rebuilds all system indexes in a specific database
-REINDEX INDEX my_index;  -- rebuilds a specific index
-
--- 3. Log Rotation
--- PostgreSQL logs can be rotated using the log_rotation_size and log_rotation_age parameters in postgresql.conf.
-log_rotation_size = 100MB
-log_rotation_age = 7d
--- Or:
-ALTER SYSTEM SET log_rotation_size = '100MB';
-ALTER SYSTEM SET log_rotation_age = '7d';
-
--- 4. Backup and Restore
--- see section 4 for backup and restore commands
-```
-
-### Monitoring and Diagnostics
-```sql
--- Explain query plan
-EXPLAIN SELECT * FROM products WHERE price > 100;  				-- shows the query plan without executing it
-EXPLAIN ANALYZE SELECT * FROM products WHERE price > 100;  		-- shows the execution plan and actual execution time in milliseconds
-EXPLAIN (FORMAT JSON) SELECT * FROM products WHERE price > 100; -- shows the execution plan in JSON format
-EXPLAIN (BUFFERS) SELECT * FROM products WHERE price > 100;  	-- shows buffer usage statistics
-EXPLAIN (VERBOSE) SELECT * FROM products WHERE price > 100; 	-- shows detailed information about the query plan
-
--- Monitor active queries
-SELECT pid, age(clock_timestamp(), query_start), usename, state, state_change, query
-    FROM pg_stat_activity
-    WHERE state != 'idle' AND query != '<IDLE>' ORDER BY query_start;
-
--- Check for long-running transactions
-SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity;
-SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity WHERE state = 'active';
-SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND state_change < now() - interval '5 minutes';
-
--- Find slow queries (requires pg_stat_statements)
-CREATE EXTENSION pg_stat_statements;
-SELECT dbid, query, calls, total_exec_time, rows, mean_exec_time
-    FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
-
--- Check for deadlocks
-SELECT * FROM pg_locks WHERE NOT granted;
-SELECT * FROM pg_locks WHERE NOT granted AND pid IN (SELECT pid FROM pg_stat_activity WHERE state = 'idle in transaction' AND state_change < now() - interval '5 minutes');
-
--- Check database statistics
-SELECT datname, tup_inserted, tup_updated, tup_deleted, tup_fetched, tup_returned FROM pg_stat_database;
-
--- Check database size
-SELECT pg_size_pretty(pg_database_size('myDB')) AS database_size;
-
--- Check table statistics
-SELECT relname, n_live_tup, n_dead_tup, last_vacuum
-    FROM pg_stat_user_tables;
-
--- Find unused indexes
-SELECT s.schemaname, s.relname, s.indexrelname, s.idx_scan
-    FROM pg_stat_user_indexes s
-    JOIN pg_index i ON s.indexrelid = i.indexrelid
-    WHERE s.idx_scan = 0 AND NOT i.indisunique;
-    
--- Terminate connections
-SELECT pg_terminate_backend(pid) 
-    FROM pg_stat_activity 
-    WHERE datname = 'mydb' AND pid <> pg_backend_pid();
-```
-
-### Clustering
-```sql
--- Cluster a table using an index
-CLUSTER my_table USING my_index;
--- Then rebuild all indexes in the database
-REINDEX DATABASE my_database;
---- Run ANALYZE to update statistics after clustering
-ANALYZE my_table;
-
--- Tables must be periodically reclustered to maintain performance, especially after large updates or deletes.
--- Check the clustering status of an index
-SELECT indexrelname, indisclustered FROM pg_index WHERE indexrelname = 'my_index';
--- Check the clustering status of a table
-SELECT relname, relhasoids, reloptions FROM pg_class WHERE relname = 'my_table';
-
--- Map physical ordering (ctid) to logical ordering (id)
--- ctid = (block/page number, index within the block)
-SELECT ctid, id FROM my_table ORDER BY id; 
-
--- Correlation of the index indicates how well the physical order of the table matches the logical order of the index, 
--- hence if the index is efficient for range queries.
-SELECT correlation FROM pg_stats WHERE tablename = 'my_table' AND attname = 'id'; -- A B-tree index has been created on the 'id' column
-
--- Enable index scans and bitmap scans
-SET enable_indexscan = on; -- Enable index scans (note: not for B-tree indexes)
-SET enable_bitmapscan = on; -- Enable bitmap index scans to improve performance for large result sets
-SET enable_seqscan = off; -- Disable sequential scans (to force index usage)
-
-```
-
-
-## 10. High Availability and Replication
+## 9. High Availability and Replication
 See: https://www.postgresql.org/docs/17/high-availability.html
 	 https://www.postgresql.org/docs/17/hot-standby.html
 
@@ -1010,30 +1019,8 @@ AFTER INSERT OR UPDATE OR DELETE ON my_table
 FOR EACH ROW EXECUTE FUNCTION notify_data_change();
 ```
 
-## 11. Additional Tools and Resources
 
-### PostgreSQL Tools
-- **pgAdmin**: Web-based administration tool
-- **pgBadger**: Log analyzer
-- **pgBouncer**: Connection pooler
-- **Prometheus**: Metrics collection for monitoring (and Grafana for visualization)
-- **barman**: Backup and recovery manager
-- **Citus**: Distributed database extension for PostgreSQL (sharding and parallel query execution)
-
-### Useful Extensions
-```sql
--- Popular extensions
-CREATE EXTENSION pg_stat_statements;    -- Query statistics
-CREATE EXTENSION postgis;               -- Spatial data
-CREATE EXTENSION pg_trgm;               -- Trigram matching for text search
-CREATE EXTENSION timescaledb;           -- Time-series data
-CREATE EXTENSION pgcrypto;              -- Cryptographic functions
-```
-
-
-
-## 12. Fine-Tuning and Optimization
-## Common SQL Tests
+## 10. Testing
 
 ### Unit Tests
 ```sql
@@ -1078,16 +1065,7 @@ BEGIN
 END;
 $$;
 
-Test Tools / Frameworks by Platform
 ```
-| Database       | Unit Test Tool                                    | Integration Option                 |
-| -------------- | ------------------------------------------------- | ---------------------------------- |
-| **SQL Server** | [tSQLt](http://tsqlt.org)                         | SSIS test harness, pytest + pyodbc |
-| **PostgreSQL** | `pgTAP`, `pytest-postgresql`                      | DBT tests, integration via Python  |
-| **Oracle**     | `utPLSQL`                                         | SQLcl, Jenkins pipelines           |
-| **MySQL**      | DIY or [MyTAP](https://github.com/ewdurbin/MyTAP) | Python-based testing               |
-| **Snowflake**  | DBT + dbt-expectations                            | Snowpark or Python unit tests      |
-| **dbt**        | `dbt test`, `schema.yml`, `dbt-utils`             | dbt + CI/CD integration            |
 
 ### Assertions
 ```sql
@@ -1121,3 +1099,48 @@ IF EXISTS (
 )
   THROW 50001, 'Test failed: NULL emails found', 1;
 ```
+
+
+
+## 11. Additional Tools and Resources
+
+### PostgreSQL Tools
+- **pgAdmin**: Web-based administration tool
+- **pgBadger**: Log analyzer
+- **pgBouncer**: Connection pooler
+- **Prometheus**: Metrics collection for monitoring (and Grafana for visualization)
+- **barman**: Backup and recovery manager
+- **pgtune**: PostgreSQL performance tuning
+
+### Extensions
+```bash
+# Enable extensions in postgresql.conf
+shared_preload_libraries = 'pg_stat_statements, pg_partman, pg_repack, pgcrypto'
+```
+```sql
+-- Enable extensions in the database
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements; -- Query statistics
+CREATE EXTENSION IF NOT EXISTS pg_stat_kcache;     -- Kernel cache statistics
+CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;    -- Query performance monitoring
+CREATE EXTENSION IF NOT EXISTS pg_hint_plan;       -- Query optimization hints
+
+CREATE EXTENSION IF NOT EXISTS postgis;            -- Spatial data
+CREATE EXTENSION IF NOT EXISTS pg_trgm;            -- Trigram matching for text search
+CREATE EXTENSION IF NOT EXISTS timescaledb;        -- Time-series data
+CREATE EXTENSION IF NOT EXISTS pgcrypto;           -- Cryptographic functions
+CREATE EXTENSION IF NOT EXISTS parquet_fdw;        -- pg-parquet foreign data wrapper
+
+CREATE EXTENSION IF NOT EXISTS citus;              -- Distributed database (sharding and parallel query execution)
+
+CREATE EXTENSION IF NOT EXISTS pg_partman;         -- Partition management
+CREATE EXTENSION IF NOT EXISTS pg_repack;          -- Repack tables and indexes
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;         -- Prewarm relation cache
+```
+
+### Test Frameworks by Platform
+| Database       | Unit Test Tool                                    | Integration Option                 |
+| -------------- | ------------------------------------------------- | ---------------------------------- |
+| **SQL Server** | [tSQLt](http://tsqlt.org)                         | SSIS test harness, pytest + pyodbc |
+| **PostgreSQL** | `pgTAP`, `pytest-postgresql`                      | DBT tests, integration via Python  |
+| **dbt**        | `dbt test`, `schema.yml`, `dbt-utils`             | dbt + CI/CD integration            |
+

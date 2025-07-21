@@ -34,11 +34,19 @@ export AIRFLOW_HOME=~/airflow
 
 Check airflow config file for default location of dags.  
 Default log path: `logs/dag_id/task_id/execution_date/try_number.log`
-
-Init db, create user, then start all components:
 ```bash
+# Init db, create user, then start all components:
 airflow standalone
 localhost:8080
+
+# Update Airflow connection
+airflow connections add 'postgres_default' \
+    --conn-type 'postgres' \
+    --conn-host 'localhost' \
+    --conn-login 'postgres' \
+    --conn-password 'your_secure_password' \
+    --conn-port 5432 \
+    --conn-schema 'postgres'
 ```
 
 ### CLI Commands
