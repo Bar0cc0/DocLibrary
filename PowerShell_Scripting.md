@@ -2,39 +2,39 @@
 
 ### Help
 ```shell
-get-alias				# lists all aliases
-get-command				# lists all commands
-get-help <cmdlet_name>	# params:  -detailed -showwindow -online
-get-help about_*
+Get-Alias				# lists all aliases
+Get-Command				# lists all commands
+Get-Help <cmdlet_name>	# params:  -detailed -showwindow -online
+Get-Help about_*
 ```
 
 ### GREP
 ```shell
 # Search for a pattern in the command history
-get-history | select * | where -property <propertyName> -like "*<pattern>*"
-get-history | select * | where -property <propertyName> -eq <somevalue>
-			| sort  -property <propertyName> [-descending]
-			| group -property <propertyName>
+Get-History | Select-Object * | Where-Object -Property <propertyName> -Like "*<pattern>*"
+Get-History | Select-Object * | Where-Object -Property <propertyName> -Eq <somevalue>
+			| Sort-Object -Property <propertyName> [-Descending]
+			| Group-Object -Property <propertyName>
 
 # Search for a pattern in the output of a command
-get-process | select * | where -property Name -like "*<pattern>*"
+Get-Process | Select-Object * | Where-Object -Property Name -Like "*<pattern>*"
 
 # Search for a pattern in the output of a pip command
-pip freeze | select-string pandas
-pip list | findstr "pandas"
+pip freeze | Select-String pandas
+pip list | FindStr "pandas"
 
 # Search for a pattern in a file
-get-content <fileName> | select-string -pattern <pattern> -caseSensitive
+Get-Content <fileName> | Select-String -Pattern <pattern> -CaseSensitive
 
 # Search for a pattern in a file and return the first 10 matches
-get-content <fileName> | select-string -pattern <pattern> -caseSensitive | select -first 10
+Get-Content <fileName> | Select-String -Pattern <pattern> -CaseSensitive | Select-Object -First 10
 
 ```
 
 ### Checks if module is installed
 ```shell
-get-module -listavailable -name <moduleName> 
-get-module -listavailable | where -property Name -eq <moduleName> [| select *]
+Get-Module -ListAvailable -Name <moduleName> 
+Get-Module -ListAvailable | Where-Object -Property Name -Eq <moduleName> | Select-Object *
 ```
 
 ### Tee-Object
@@ -49,16 +49,25 @@ Get-Variable HighCpuProcesses | Select-Object -ExpandProperty Value
 
 ### Manage services
 ```shell
-get-service | where-object {$_.status -eq 'Running'}
-get-service <service_name> | get-member   # returns list of attributes and methods
+Get-Service | Where-Object {$_.Status -eq 'Running'}
+Get-Service <service_name> | Get-Member   # returns list of attributes and methods
 
-get-service | out-file -filepath <path> | convertto-csv
-get-service | export-clixml -path <path> | compare-object -referenceobject (import-clixml <path>) -diff -process -property [property]
+Get-Service | Out-File -FilePath <path> | ConvertTo-Csv
+Get-Service | Export-Clixml -Path <path> | Compare-Object -ReferenceObject (Import-Clixml <path>) -Diff -Process -Property [property]
 
-start-service -name <serviceName> [-WhatIf]
-stop-service  -name <serviceName>
+Start-Service -Name <serviceName> [-ArgumentList "<args>"] # -ArgumentList "`"$SolutionPath`"" 
+Stop-Service -Name <serviceName>
 ```
 
+### Manage processes
+```shell
+Get-Process | Where-Object {$_.CPU -gt 10}
+Get-Process <process_name> | Get-Member   # returns list of attributes and methods
+Get-Process | Select-Object -Property Name, Id, CPU, Handles, StartTime | Sort-Object -Property CPU -Descending
+
+Start-Process -Name <processName>
+Stop-Process -Name <processName> [-Force]
+```
 
 ### Variables
 ```shell
@@ -136,6 +145,7 @@ Invoke-WebRequest -Uri "https://www.url.com" -Method Post -Body $body -ContentTy
 
 ### File Operations
 ```shell
+# File operations
 Remove-Item -Path "C:\path\to\file.txt" 
 Copy-Item -Path "C:\path\to\source.txt" -Destination "C:\path\to\destination.txt"  
 Move-Item -Path "C:\path\to\source.txt" -Destination "C:\path\to\destination.txt" 
@@ -143,13 +153,28 @@ New-Item -Path "C:\path\to\newfile.txt" -ItemType [File | Directory]
 
 # List files in a directory (alias: ls, dir)
 Get-ChildItem -Path "C:\path\to\directory" -Recurse | Where-Object { $_.Extension -eq ".txt" }
+
+# Search for a specific file
+Get-ChildItem -Path "C:\path\to\directory" -Recurse | Where-Object { $_.Name -like "*searchTerm*" }
+
+# Get file metadata
+Get-Item -Path "C:\path\to\file.txt" | Select-Object Name, Length, LastWriteTime
+
 # Read a file (alias: cat, type)
 Get-Content -Path "C:\path\to\file.txt" | Select-String "search term"
 (Get-Content -Path "C:\path\to\file.txt" -Raw) -split '\r?\n' | Where-Object { $_ -match '\S' }
+
+# Write to a file
+"Hello, World!" | Out-File -FilePath "C:\path\to\file.txt"		# Create new file
+"Hello, PowerShell!" | Set-Content -Path "C:\path\to\file.txt"	# Overwrite the file
+"Hello, Universe!" | Add-Content -Path "C:\path\to\file.txt"	# Append to the file
+
+# Replace content using wildcards in a file
+(Get-Content -Path "C:\path\to\file.txt") -replace "Hello.*", "Goodbye" | Set-Content -Path "C:\path\to\file.txt"
 ```
 
 
-### Module that contains functions (scope = current session):
+### Module that contains functions (scope = current session)
 ```shell
 Import-Module <moduleName>.ps1
 <functionName> [args]
@@ -176,6 +201,8 @@ $CurrentPath = $CurrentPath -replace '\\', '/'
 
 # Test if a path exists
 Test-Path -Path "C:\path\to\file.txt"
+
+
 ```
 
 ### Database Connection
@@ -344,5 +371,127 @@ Formatting is preserved.
 	} finally {
 		Write-Host "Function execution completed."
 	}
-}	
+}
+
+
+function Restart-VisualStudio {
+    param (
+        [switch]$Force = $false,
+        [int]$WaitSeconds = 3
+    )
+
+    # Find running Visual Studio processes
+    $vsProcesses = Get-Process -Name "devenv" -ErrorAction SilentlyContinue
+    
+    if ($vsProcesses) {
+        # Get the solution path from command line arguments
+        $solutionPath = $null
+        foreach ($proc in $vsProcesses) {
+            try {
+                $cmdLine = (Get-WmiObject -Class Win32_Process -Filter "ProcessId = $($proc.Id)").CommandLine
+                if ($cmdLine -match '(?<=")(.*\.sln)(?=")') {
+                    $solutionPath = $matches[0]
+                    break
+                }
+            }
+            catch {
+                Write-Warning "Could not retrieve command line for process $($proc.Id)"
+            }
+        }
+        
+        Write-Host "Found Visual Studio with solution: $solutionPath"
+        
+        # Close Visual Studio
+        if ($Force) {
+            $vsProcesses | ForEach-Object { 
+                Write-Host "Force closing Visual Studio (ID: $($_.Id))"
+                $_ | Stop-Process -Force 
+            }
+        } else {
+            $vsProcesses | ForEach-Object { 
+                Write-Host "Gracefully closing Visual Studio (ID: $($_.Id))"
+                $_.CloseMainWindow() | Out-Null
+            }
+        }
+        
+        # Wait for processes to close
+        Write-Host "Waiting $WaitSeconds seconds for Visual Studio to close..."
+        Start-Sleep -Seconds $WaitSeconds
+        
+        # Reopen Visual Studio with the same solution
+        if ($solutionPath) {
+            Write-Host "Restarting Visual Studio with solution: $solutionPath"
+            Start-Process "devenv.exe" -ArgumentList "`"$solutionPath`""
+        } else {
+            Write-Host "Restarting Visual Studio (no solution found)"
+            Start-Process "devenv.exe"
+        }
+    } else {
+        Write-Host "No running Visual Studio instances found."
+        Start-Process "devenv.exe"
+    }
+}
+
+```
+
+
+### Database connection
+#### PostgreSQL example
+```powershell
+# Define the connection string 
+$connectionString = "Server=localhost;Port=5432;Database=mydb;User Id=postgres;Password=password;"
+
+# Create a SQL connection
+# Make sure Npgsql is installed: Install-Package Npgsql
+$sqlConnection = New-Object Npgsql.NpgsqlConnection
+$sqlConnection.ConnectionString = $connectionString
+
+try {
+    # Open the connection
+    $sqlConnection.Open()
+    Write-Host "Database connection successful."
+
+    # Execute a simple query
+    $sqlCommand = $sqlConnection.CreateCommand()
+    $sqlCommand.CommandText = "SELECT * FROM myTable LIMIT 10"
+    $sqlDataReader = $sqlCommand.ExecuteReader()
+
+    # Process the results
+    while ($sqlDataReader.Read()) {
+        Write-Host "Row: $($sqlDataReader[0]), $($sqlDataReader[1])"
+    }
+} catch {
+    Write-Error "Database connection failed: $_"
+} finally {
+    # Clean up
+    $sqlDataReader.Close()
+    $sqlConnection.Close()
+}
+```
+
+#### SQL Server example
+```PowerShell
+# Create a connection
+$connectionString = "Server=myServerAddress;Database=myDataBase;User Id=myUsername;Password=myPassword;"
+$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
+$sqlConnection.ConnectionString = $connectionString
+$sqlConnection.Open()
+
+# Create a SQL command
+$sqlCommand = $sqlConnection.CreateCommand()
+$sqlCommand.CommandText = "SELECT * FROM myTable LIMIT 10"
+$sqlDataReader = $sqlCommand.ExecuteReader()
+
+# Process the results
+while ($sqlDataReader.Read()) {
+    Write-Host "Row: $($sqlDataReader[0]), $($sqlDataReader[1])"
+}
+
+# Alternative way to execute: Invoke-Sqlcmd
+Invoke-Sqlcmd -Query "SELECT * FROM myTable LIMIT 10" -ConnectionString $connectionString
+Invoke-Sqlcmd -Query "EXEC myStoredProcedure" -ConnectionString $connectionString
+
+# Clean up
+$sqlDataReader.Close()
+$sqlConnection.Close()
 ```

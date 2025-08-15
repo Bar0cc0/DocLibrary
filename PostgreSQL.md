@@ -227,6 +227,9 @@ pg_dump -U postgres -h localhost -d <db_name> --data-only > data.sql
 # Physical backup
 pg_basebackup -h localhost -D /path/to/backup -U postgres -P --wal-method=stream --format=tar
 
+# Verify backup
+pg_verifybackup --file=/path/to/backup
+
 # Restore from backup
 psql -U postgres -h localhost -d <db_name> -f backup.dump -X --set ON_ERROR_STOP=on 
 pg_restore -U postgres -d <db_name> backup.dump
@@ -252,14 +255,14 @@ createuser -U postgres -h localhost -p 5432 --interactive <username>
 dropuser -U postgres -h localhost -p 5432 <username>
 ```
 ```sql
-# Role Management
+-- Role Management
 CREATE ROLE r_postgres SUPERUSER;
 CREATE ROLE r_postgres LOGIN CREATEDB CREATEROLE REPLICATION PASSWORD 'secure_password' CONNECTION LIMIT int;
 ALTER ROLE r_postgres SET default_transaction_isolation TO 'read committed';
 GRANT ALL PRIVILEGES ON DATABASE postgres TO r_postgres;
 REVOKE ALL PRIVILEGES ON DATABASE postgres FROM r_postgres;
 
-# Dropping role procedure
+-- Dropping role procedure
 REASSIGN OWNED BY doomed_role TO successor_role;
 DROP OWNED BY doomed_role;
 DROP ROLE doomed_role;
@@ -750,6 +753,10 @@ SELECT r.relname, p.name 		-- Returns the name of the table where each row comes
 	WHERE p.tableoid = r.oid; 	
 ```
 
+
+
+
+
 ## 8. Table Access Optimization
 
 ### Indexing
@@ -784,6 +791,15 @@ REINDEX INDEX idx_products_name;
 REINDEX TABLE products;
 ```
 
+```bash
+# Reindex all indexes in a database
+reindexdb -U postgres -h localhost -p 5432 [-d <db_name> | --all] \
+	[-S <schema_name>] [-t <table_name>] [-i <index_name>] \
+	-njobs \ # njobs < max_connections \
+	--verbose
+```
+
+
 ### Clustering
 ```sql
 -- Cluster a table using an index = physically reorder data to match the index order
@@ -802,14 +818,14 @@ Allows for old data removal without disrupting the physical ordering.
 -- Enable pruning to skip scanning partitions that do not match the query conditions.
 SET enable_partition_pruning = on;
 
--- Create a partitioned table BY RANGE
+-- Create a partitioned table (root node) BY RANGE
 CREATE TABLE sales (
 	id SERIAL PRIMARY KEY,
 	sale_date DATE NOT NULL,
 	amount DECIMAL(10, 2) NOT NULL
 ) PARTITION BY RANGE (sale_date); -- BY LIST, HASH, or RANGE
 
--- Create partitions for specific range
+-- Create partitions for specific range (leaf nodes)
 CREATE TABLE sales_2023 PARTITION OF sales
 	FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
 CREATE TABLE sales_2024 PARTITION OF sales
@@ -886,6 +902,25 @@ CREATE TABLE sales_2023_region1 PARTITION OF sales
 	PARTITION BY LIST (region);
 CREATE TABLE sales_2023_region1_north PARTITION OF sales_2023_region1
 	FOR VALUES IN ('CA');
+
+-- Automatically create partitions for new values
+CREATE OR REPLACE FUNCTION create_partition(table_name TEXT)
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (NEW.sale_date IS NOT NULL) THEN
+        EXECUTE format('CREATE TABLE %I_%s PARTITION OF sales FOR VALUES FROM (%L) TO (%L)',
+                       table_name,
+                       to_char(NEW.sale_date, 'YYYY'),
+                       NEW.sale_date,
+                       NEW.sale_date + interval '1 year');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER create_partition_trigger
+AFTER INSERT ON sales
+FOR EACH ROW EXECUTE FUNCTION create_partition();
 
 ```
 

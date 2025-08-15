@@ -8,11 +8,14 @@
 
 1. [Maintenance and Monitoring](#1-maintenance-and-monitoring)
    - [Routine Maintenance](#routine-maintenance)
-   - [Monitoring](#monitoring)
-   - [Checks](#checks)
+   - [Monitoring and Diagnostics](#monitoring-diagnostics)
+	 - [Query Execution Analysis](#query-execution-analysis)
+	 - [Table Clustering](#table-clustering)
+	 - [Index Health](#index-health)
+	 - [Complete System Assessment](#complete-system-assessment)
 
 2. [Parallel Query Execution](#2-parallel-query-execution)
-   - [Definition: Gather Nodes](#21-definition-gather-nodes)
+   - [Gather Nodes](#21-definition-gather-nodes)
    - [Limitations of Parallelism](#22-limitations-of-parallelism)
 
 3. [NUMA Awareness](#3-numa-awareness)
@@ -32,72 +35,37 @@
 
 ## PostgreSQL Performance Factors Summary
 
-### I/O Impact Factors
+### 1. I/O Impact Factors
 
-#### Negative Factors
+| Factor | Worst-Case Impact | Best Practice |
+|--------|-------------------|------------------|
+| **Table Access Methods** | **Sequential Scans**: When queries don't use indexes and scan entire tables, causing excessive disk reads and significantly increased I/O load. | **Appropriate Indexing**: Well-chosen indexes dramatically reduce disk reads by allowing PostgreSQL to access only the relevant pages rather than scanning entire tables. Different index types (B-tree, GIN, GiST) are optimized for different query patterns. |
+| **Index Implementation** | **B-tree Index Operations**: Sequential scan + sorting requires temporary files on disk, creating storage and I/O overhead. | **Specialized Indexes**: Using the right index type for specific query patterns minimizes I/O (GiST for geometric data, GIN for full-text, BRIN for ordered data). |
+| **Data Organization** | **Lack of Table Clustering**: When related data is physically scattered across storage, more disk blocks must be read. | **Table Clustering**: `CLUSTER` command physically reorders table data to match index order, reducing random I/O by ensuring related data is stored sequentially on disk. |
+| **Large Table Management** | **Unpartitioned Large Tables**: Without partitioning, queries need to scan entire large tables rather than targeting specific partitions. | **Partitioning**: Breaking large tables into smaller chunks enables partition pruning, allowing queries to skip irrelevant partitions entirely. |
+| **Maintenance Operations** | **VACUUM Operations**: Background cleanup processes generate significant I/O, especially with high update/delete rates. | **Strategic VACUUM Scheduling**: Regular but appropriately timed VACUUM operations prevent bloat without causing I/O spikes during peak hours. Autovacuum with optimized settings balances maintenance needs with I/O impact. |
+| **Checkpointing** | **Excessive Checkpoints**: Too frequent checkpoints cause I/O spikes. | **Optimal Checkpointing**: Setting appropriate `checkpoint_timeout` and `max_wal_size` spreads I/O over time rather than causing spikes. |
+| **Parallel Processing** | **Parallel Query Spills**: Parallel hash joins or nested loop joins degrade due to spill to disk or duplicated work. | **Parallel Query Operations**: When properly configured, parallel query execution distributes I/O load across multiple workers. |
+| **Memory Management** | **Large Sort Operations**: When sort operations exceed work_mem, PostgreSQL spills to disk, causing additional I/O operations. | **Buffer Cache Warming**: Using pg_prewarm extension to explicitly load frequently accessed data into the buffer cache before it's needed reduces I/O during peak usage. |
+| **Join Implementations** | **Inefficient JOIN Operations**: Particularly nested loop joins on large datasets that can't fit in memory, causing repeated table scans. | **Connection Pooling**: Using pgBouncer reduces the overhead of connection establishment/teardown, minimizing associated I/O operations. |
+| **Write-Ahead Logging** | **WAL Volume**: High transaction rates generate excessive WAL files, increasing I/O for both writing and archiving. | |
+| **Schema Changes** | **Full Table Rewrites**: Operations like ALTER TABLE that require rewriting entire tables. | |
 
-| Factor | Impact/Explanation |
-|--------|-------------------|
-| **Sequential Scans** | When queries don't use indexes and scan entire tables, causing excessive disk reads and significantly increased I/O load. |
-| **B-tree Index Operations** | B-tree: sequential scan + sorting => requires a temporary file on disk => storage and I/O overhead |
-| **Large Sort Operations** | When sort operations exceed work_mem, PostgreSQL spills to disk, causing additional I/O operations. |
-| **Inefficient JOIN Operations** | Particularly nested loop joins on large datasets that can't fit in memory, causing repeated table scans. |
-| **Lack of Table Clustering** | When related data is physically scattered across storage, more disk blocks must be read. |
-| **Unpartitioned Large Tables** | Without partitioning, queries need to scan entire large tables rather than targeting specific partitions. |
-| **WAL (Write-Ahead Logging) Volume** | High transaction rates generate excessive WAL files, increasing I/O for both writing and archiving. |
-| **VACUUM Operations** | Background cleanup processes generate significant I/O, especially with high update/delete rates. |
-| **Full Table Rewrites** | Operations like ALTER TABLE that require rewriting entire tables. |
-| **Parallel Query Spills** | Parallel hash joins or nested loop joins degrade due to spill to disk or duplicated work |
-| **Excessive Checkpoints** | Too frequent checkpoints cause I/O spikes. |
 
-#### Positive Factors
+### 2. Memory Impact Factors
 
-| Factor | Impact/Explanation |
-|--------|-------------------|
-| **Appropriate Indexing** | Well-chosen indexes dramatically reduce disk reads by allowing PostgreSQL to access only the relevant pages rather than scanning entire tables. Different index types (B-tree, GIN, GiST) are optimized for different query patterns. |
-| **Table Clustering** | `CLUSTER` command physically reorders table data to match index order, reducing random I/O by ensuring related data is stored sequentially on disk |
-| **Partitioning** | Breaking large tables into smaller chunks enables partition pruning, allowing queries to skip irrelevant partitions entirely |
-| **Strategic VACUUM Scheduling** | Regular but appropriately timed VACUUM operations prevent bloat without causing I/O spikes during peak hours. Autovacuum with optimized settings balances maintenance needs with I/O impact. |
-| **Connection Pooling** | Using pgBouncer reduces the overhead of connection establishment/teardown, minimizing associated I/O operations. |
-| **Optimal Checkpointing** | Setting appropriate `checkpoint_timeout` and `max_wal_size` spreads I/O over time rather than causing spikes |
-| **pg_prewarm Extension** | Explicitly loading frequently accessed data into the buffer cache before it's needed reduces I/O during peak usage. |
-| **Parallel Query Operations** | When properly configured, parallel query execution distributes I/O load across multiple workers |
-
-### Memory Impact Factors
-
-#### Negative Factors
-
-| Factor | Impact/Explanation |
-|--------|-------------------|
-| **Insufficient shared_buffers** | When buffer cache is too small, PostgreSQL must frequently read from disk instead of memory. |
-| **Inadequate work_mem** | When set too low, sort and hash operations spill to disk instead of completing in memory. |
-| **Too Many Connections** | Each connection consumes memory; excessive connections can exhaust available RAM. |
-| **Complex JSONB Data** | Large JSON documents consume significant memory for parsing, storage, and indexing. |
-| **Inefficient GIN Indexes** | While powerful for full-text search and JSONB, they have higher memory requirements than B-tree indexes. |
-| **Poor Query Planning** | Inefficient execution plans may use more memory than necessary for operations. |
-| **Unoptimized Parallel Queries** | Each worker process requires its own memory allocation, potentially multiplying memory usage. |
-| **Large Temporary Result Sets** | Queries that generate large intermediate results can exhaust available memory. |
-| **Poorly Sized maintenance_work_mem** | When too low, affects vacuum and index creation performance. |
-| **Too Many Indexes** | Each index consumes memory in the shared buffer pool, reducing space for table data. |
-| **Inadequate effective_cache_size** | When set incorrectly, can lead to suboptimal query plans that don't account for OS cache. |
-| **Transaction ID Wraparound** | Can cause memory bloat if not addressed with regular vacuuming. |
-
-#### Positive Factors
-
-| Factor | Impact/Explanation |
-|--------|-------------------|
-| **Appropriate shared_buffers** | Keeping frequently accessed data in memory eliminates disk reads. OLTP |
-| **Adequate work_mem** | Sufficient per-operation memory prevents spilling sorts and hash operations to disk |
-| **Proper maintenance_work_mem** | Higher values for maintenance operations like VACUUM and CREATE INDEX significantly reduce their I/O impact |
-| **Optimized effective_cache_size** | Accurately representing available OS cache helps the planner choose more efficient execution strategies |
-| **Connection Pooling** | Reduces total memory footprint by reusing connections instead of creating new ones |
-| **JIT Compilation** | For complex queries, Just-In-Time compilation can improve CPU efficiency and reduce memory pressure |
-| **NUMA-Aware Configuration** | For multi-socket servers, binding PostgreSQL processes to specific NUMA nodes reduces memory access latency |
-| **Proper Parallelism Settings** | Configuring max_parallel_workers appropriately ensures efficient memory utilization across multiple cores without oversubscription |
-| **Prepared Statements** | Reusing query plans reduces the memory overhead of planning and optimizing repeated queries |
-| **Proper Index Selection** | Using the right index type for each use case minimizes memory requirements |
-| **temp_buffers Optimization** | For queries using temporary tables, adequate temp_buffers reduces disk I/O |
-| **Logical Replication Over Physical** | Logical replication is often more memory-efficient than physical replication as it propagates only the necessary data changes |
+| Factor | Worst-Case Impact | Best Practice |
+|--------|-------------------|------------------|
+| **shared_buffers** | **Insufficient**: When buffer cache is too small, PostgreSQL must frequently read from disk instead of memory. | **Appropriate**: Keeping frequently accessed data in memory eliminates disk reads. For OLTP workloads, allocate ~25–40% of system RAM; for OLAP workloads, up to 50–75%. |
+| **work_mem** | **Inadequate**: When set too low, sort and hash operations spill to disk instead of completing in memory. | **Adequate**: Sufficient per-operation memory prevents spilling sorts and hash operations to disk. Start with 32MB–64MB per operation to avoid "Sort Method: external merge Disk." |
+| **maintenance_work_mem** | **Poorly Sized**: When too low, affects vacuum and index creation performance. | **Proper**: Higher values for maintenance operations like VACUUM and CREATE INDEX significantly reduce their I/O impact. For transactional DBs: 256MB–512MB; for bulk loads/indexing: 1GB–2GB (or more). |
+| **effective_cache_size** | **Inadequate**: When set incorrectly, can lead to suboptimal query plans that don't account for OS cache. | **Optimized**: Accurately representing available OS cache helps the planner choose more efficient execution strategies. For OLTP: ~50% of system RAM; for OLAP: ~75% of system RAM. |
+| **Connection Management** | **Too Many Connections**: Each connection consumes memory; excessive connections can exhaust available RAM. | **Connection Pooling**: Reduces total memory footprint by reusing connections instead of creating new ones. |
+| **Parallel Query Operations** | **Unoptimized Parallel Queries**: Each worker process requires its own memory allocation, potentially multiplying memory usage. | **Proper Parallelism Settings**: Configuring max_parallel_workers appropriately ensures efficient memory utilization across multiple cores without oversubscription. |
+| **Indexing Strategy** | **Too Many Indexes**: Each index consumes memory in the shared buffer pool, reducing space for table data.<br>**Inefficient GIN Indexes**: While powerful for full-text search and JSONB, they have higher memory requirements than B-tree indexes. | **Proper Index Selection**: Using the right index type for each use case minimizes memory requirements. For example, Hash indexes for equality-only lookups use less memory than B-tree indexes. |
+| **Query Execution** | **Poor Query Planning**: Inefficient execution plans may use more memory than necessary for operations.<br>**Large Temporary Result Sets**: Queries that generate large intermediate results can exhaust available memory. | **Prepared Statements**: Reusing query plans reduces the memory overhead of planning and optimizing repeated queries.<br>**temp_buffers Optimization**: For queries using temporary tables, adequate temp_buffers reduces disk I/O. |
+| **Data Types** | **Complex JSONB Data**: Large JSON documents consume significant memory for parsing, storage, and indexing. | **JIT Compilation**: For complex queries, Just-In-Time compilation can improve CPU efficiency and reduce memory pressure. |
+| **Architecture** | **Transaction ID Wraparound**: Can cause memory bloat if not addressed with regular vacuuming. | **NUMA-Aware Configuration**: For multi-socket servers, binding PostgreSQL processes to specific NUMA nodes reduces memory access latency.<br>**Logical Replication Over Physical**: Logical replication is often more memory-efficient than physical replication as it propagates only the necessary data changes. |
 
 
 ## 1. Maintenance and Monitoring
@@ -125,6 +93,9 @@ VACUUM ANALYZE table_name; 	-- Use case: after significant data changes, to upda
 VACUUM FREEZE table_name; 	-- marks all tuples as frozen; prevents transaction ID wraparound issues
 							-- Use case: for tables with high transaction ID churn, to prevent wraparound
 
+-- After significant data changes, analyze table to update statistics
+ANALYZE my_table;
+
 -- 2. Reindexing
 -- Rebuilding indexes to improve performance after significant data changes or fragmentation
 -- Note: too many indexes can slow down write operations
@@ -132,6 +103,18 @@ REINDEX TABLE my_table;  		-- rebuilds the index for a specific table
 REINDEX DATABASE my_database;  	-- rebuilds all indexes in a specific database
 REINDEX SYSTEM my_database;  	-- rebuilds all system indexes in a specific database
 REINDEX INDEX my_index;  		-- rebuilds a specific index
+
+-- Check tables needing VACUUM based on dead tuple percentage
+SELECT relname, n_live_tup, n_dead_tup, 
+       round(n_dead_tup * 100.0 / nullif(n_live_tup, 0), 2) AS dead_percentage,
+       last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+WHERE round(n_dead_tup * 100.0 / nullif(n_live_tup, 0), 2) > 10
+ORDER BY dead_percentage DESC;
+
+-- Clustering: physically reorders the table based on the specified index
+-- Clustering is a one-time operation and does not maintain the order after updates or inserts.
+CLUSTER my_table USING my_index;
 
 -- 3. Log Rotation
 -- PostgreSQL logs can be rotated using the log_rotation_size and log_rotation_age parameters in postgresql.conf.
@@ -147,8 +130,20 @@ ALTER SYSTEM SET log_rotation_age = '7d';
 -- see section 4, PostgreSQL.md
 ```
 
-### Monitoring
+### Monitoring & Diagnostics
+
+#### Query Execution Analysis
 ```sql
+-- Enable partition pruning to skip irrelevant partitions
+-- Critical for partitioned tables to avoid scanning unnecessary data
+SET enable_partition_pruning = on;  -- Default is on in modern PostgreSQL
+
+-- Control scan methods (useful for testing different execution plans)
+SET enable_indexscan = on;      -- Enable index scans
+SET enable_bitmapscan = on;     -- Enable bitmap scans (better for larger result sets)
+SET enable_seqscan = off;       -- Temporarily disable sequential scans to force index usage
+                                -- Warning: Only use during testing, not in production
+								
 -- Explain query plan
 EXPLAIN SELECT * FROM products WHERE price > 100;  				-- shows the query plan without executing it
 EXPLAIN ANALYZE SELECT * FROM products WHERE price > 100;  		-- shows the execution plan and actual execution time in milliseconds
@@ -156,28 +151,126 @@ EXPLAIN (FORMAT JSON) SELECT * FROM products WHERE price > 100; -- shows the exe
 EXPLAIN (BUFFERS) SELECT * FROM products WHERE price > 100;  	-- shows buffer usage statistics
 EXPLAIN (VERBOSE) SELECT * FROM products WHERE price > 100; 	-- shows detailed information about the query plan
 
--- Monitor active queries
-SELECT pid, age(clock_timestamp(), query_start), usename, state, state_change, query
-    FROM pg_stat_activity
-    WHERE state != 'idle' AND query != '<IDLE>' ORDER BY query_start;
+-- Find queries with disk spills
+SELECT query, calls, rows, 
+       total_exec_time/1000 AS total_seconds,
+       temp_blks_read, temp_blks_written
+FROM pg_stat_statements 
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 10;
 
--- Check for long-running transactions
-SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity;
-SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity WHERE state = 'active';
-SELECT pid, usename, datname, state, state_change, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND state_change < now() - interval '5 minutes';
+-- Monitor active queries
+SELECT pid, 
+       age(clock_timestamp(), query_start) AS duration, 
+       usename, datname, state, 
+       query
+FROM pg_stat_activity
+WHERE state != 'idle' AND query != '<IDLE>' 
+ORDER BY duration DESC;
 
 -- Find slow queries (requires pg_stat_statements)
 CREATE EXTENSION pg_stat_statements;
 SELECT dbid, query, calls, total_exec_time, rows, mean_exec_time
     FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
 
--- Check for deadlocks
-SELECT * FROM pg_locks WHERE NOT granted;
-SELECT * FROM pg_locks WHERE NOT granted AND pid IN (
-	SELECT pid FROM pg_stat_activity 
-	WHERE state = 'idle in transaction' AND state_change < now() - interval '5 minutes'
-);
+-- Check for problematic idle transactions (uncommitted work holding locks)
+SELECT pid, usename, datname, 
+       age(clock_timestamp(), state_change) AS idle_time,
+       query 
+FROM pg_stat_activity 
+WHERE state = 'idle in transaction' 
+  AND state_change < now() - interval '5 minutes';
 
+-- Examine lock conflicts
+SELECT blocked.pid AS blocked_pid, 
+       blocking.pid AS blocking_pid,
+       blocked.query AS blocked_query,
+       blocking.query AS blocking_query,
+       age(now(), blocked.query_start) AS blocked_duration
+FROM pg_stat_activity blocked
+JOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid
+JOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype
+  AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+  AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+  AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
+  AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
+  AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
+  AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
+  AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
+  AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
+  AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
+  AND blocking_locks.pid != blocked_locks.pid
+JOIN pg_stat_activity blocking ON blocking.pid = blocking_locks.pid
+WHERE NOT blocked_locks.granted;
+```
+
+#### Table Clustering
+```sql
+-- Check the clustering status of an index
+SELECT indexrelname, indisclustered FROM pg_index WHERE indexrelname = 'my_index';
+
+-- Check the clustering status of a table
+SELECT relname, relhasoids, reloptions FROM pg_class WHERE relname = 'my_table';
+
+-- Map physical ordering (ctid) to logical ordering (id)
+-- ctid = (block/page number, index within the block)
+SELECT ctid, id FROM my_table ORDER BY id DESC; 
+
+-- Measure correlation between physical and logical order
+-- Value interpretation: 1.0 = perfect correlation, 0 = random ordering
+-- High values (>0.75) indicate good physical ordering for the column
+SELECT correlation FROM pg_stats 
+WHERE tablename = 'my_table' AND attname = 'id';  -- Higher is better for B-tree indexes
+```
+
+#### Index Health
+```sql
+-- Check index corruption for critical B-tree indexes
+-- This performs logical verification of index structure
+-- Returns true for each valid index, or error details for corrupted ones
+SELECT bt_index_check(index => c.oid, heapallindexed => i.indisunique),
+       c.relname,
+       c.relpages
+FROM pg_index i
+JOIN pg_opclass op ON i.indclass[0] = op.oid
+JOIN pg_am am ON op.opcmethod = am.oid
+JOIN pg_class c ON i.indexrelid = c.oid
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE am.amname = 'btree'
+  AND c.relpersistence != 't'  -- Skip temp tables from other sessions
+  AND c.relkind = 'i' AND i.indisready AND i.indisvalid
+ORDER BY c.relpages DESC LIMIT 10;  -- Check the 10 largest indexes first
+
+-- Find unused indexes consuming space without benefit
+SELECT s.schemaname, 
+       s.relname AS table_name, 
+       s.indexrelname AS index_name, 
+       pg_size_pretty(pg_relation_size(idx.oid)) AS index_size,
+       s.idx_scan AS scan_count
+FROM pg_stat_user_indexes s
+JOIN pg_index i ON s.indexrelid = i.indexrelid
+JOIN pg_class idx ON i.indexrelid = idx.oid
+WHERE s.idx_scan = 0      -- No scans since last stats reset
+AND NOT i.indisunique     -- Not a unique constraint
+AND NOT EXISTS            -- Not a primary key
+    (SELECT 1 FROM pg_constraint c 
+     WHERE c.conindid = i.indexrelid AND c.contype = 'p')
+ORDER BY pg_relation_size(idx.oid) DESC;
+
+-- Check for index bloat
+SELECT schemaname, 
+	   relname AS index_name, 
+	   pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
+	   pg_size_pretty(pg_relation_size(indexrelid) - pg_relation_size(indexrelid, 'main')) AS bloat_size,
+	   idx_scan
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0  -- No scans since last stats reset
+ORDER BY pg_relation_size(indexrelid) DESC;
+```
+
+#### Complete System Assessment
+```sql
 -- Check database statistics
 SELECT datname, tup_inserted, tup_updated, tup_deleted, tup_fetched, tup_returned FROM pg_stat_database;
 
@@ -186,61 +279,59 @@ SELECT pg_size_pretty(pg_database_size('myDB')) AS database_size;
 
 -- Check table statistics
 SELECT relname, n_live_tup, n_dead_tup, last_vacuum
-    FROM pg_stat_user_tables;
-
--- Find unused indexes
-SELECT s.schemaname, s.relname, s.indexrelname, s.idx_scan
-    FROM pg_stat_user_indexes s
-    JOIN pg_index i ON s.indexrelid = i.indexrelid
-    WHERE s.idx_scan = 0 AND NOT i.indisunique;
-    
--- Terminate connections
-SELECT pg_terminate_backend(pid) 
-    FROM pg_stat_activity 
-    WHERE datname = 'mydb' AND pid <> pg_backend_pid();
+    FROM pg_stat_user_tables;  
 
 -- Check replication status
 SELECT * FROM pg_stat_replication;
 
 -- Check for replication lag (if using streaming replication)
+-- Critical for read scalability and failover readiness
 SELECT application_name, client_addr, state, 
 	   sync_state, pg_last_xact_replay_timestamp() AS last_replay_time,
 	   now() - pg_last_xact_replay_timestamp() AS replication_lag
 	FROM pg_stat_replication;
 
-```
+-- Emergency: Terminate blocking connections
+SELECT pg_terminate_backend(pid) 
+    FROM pg_stat_activity 
+    WHERE datname = 'mydb' AND pid <> pg_backend_pid();
 
-### Checks
-```sql
--- Clustering: physically reorders the table based on the specified index
--- Clustering is a one-time operation and does not maintain the order after updates or inserts.
-CLUSTER my_table USING my_index;
--- Then rebuild all indexes in the database
-REINDEX DATABASE my_database;
---- Run ANALYZE to update statistics after clustering
-ANALYZE my_table;
-
--- Check the clustering status of an index
-SELECT indexrelname, indisclustered FROM pg_index WHERE indexrelname = 'my_index';
--- Check the clustering status of a table
-SELECT relname, relhasoids, reloptions FROM pg_class WHERE relname = 'my_table';
-
--- Map physical ordering (ctid) to logical ordering (id)
--- ctid = (block/page number, index within the block)
-SELECT ctid, id FROM my_table ORDER BY id; 
-
--- Correlation of the index indicates how well the physical order of the table matches the logical order of the index, 
--- hence if the index is efficient for range queries.
-SELECT correlation FROM pg_stats WHERE tablename = 'my_table' AND attname = 'id'; -- A B-tree index has been created on the 'id' column
-
--- Enable pruning to skip scanning partitions that do not match the query conditions.
-SET enable_partition_pruning = on;
-
--- Enable index scans and bitmap scans
-SET enable_indexscan = on;	-- Enable index scans (note: not for B-tree indexes)
-SET enable_bitmapscan = on; -- Enable bitmap index scans to improve performance for large result sets
-SET enable_seqscan = off; 	-- Disable sequential scans (to force index usage)
-
+-- Comprehensive system check - evaluate multiple health indicators
+WITH table_stats AS (
+    SELECT
+        relname,
+        n_live_tup,
+        n_dead_tup,
+        CASE WHEN n_live_tup = 0 THEN 0 
+             ELSE n_dead_tup::float / n_live_tup::float 
+        END AS dead_ratio,
+        last_vacuum,
+        last_autovacuum,
+        last_analyze
+    FROM pg_stat_user_tables
+),
+index_stats AS (
+    SELECT
+        schemaname,
+        relname,
+        indexrelname,
+        idx_scan
+    FROM pg_stat_user_indexes
+)
+SELECT 
+    ts.relname AS table_name,
+    pg_size_pretty(pg_total_relation_size(ts.relname::regclass)) AS total_size,
+    ts.n_live_tup AS live_rows,
+    ts.n_dead_tup AS dead_rows,
+    ROUND(ts.dead_ratio * 100, 2) AS dead_pct,
+    (SELECT COUNT(*) FROM index_stats WHERE relname = ts.relname) AS index_count,
+    (SELECT COUNT(*) FROM index_stats WHERE relname = ts.relname AND idx_scan = 0) AS unused_indexes,
+    ts.last_vacuum,
+    ts.last_autovacuum,
+    ts.last_analyze
+FROM table_stats ts
+ORDER BY pg_total_relation_size(ts.relname::regclass) DESC
+LIMIT 20;  -- Focus on the largest tables
 ```
 
 
@@ -331,7 +422,7 @@ Max Memory = max_connections × work_mem [× joins/sorts per query]
 - `pgtune` helps generate a configuration based on your system's resources and workload:  
 https://pgtune.leopard.in.ua/
 
-- Memory parameters in `postgresql.conf`:
+- Memory parameters in `postgresql.conf` / scopes:
 ```sql
 -- Memory used for sorting, hashing and bitmap operations (GROUP BY, ORDER BY, DISTINCT, JOIN)
 ALTER SYSTEM SET work_mem = '64MB';          		
@@ -471,6 +562,28 @@ FROM analyzed_plans
 WHERE explain_output NOT LIKE '%Parallel%'
 LIMIT 10;
 ```
+### 5.3. Benchmarking
+```bash
+# Create a benchmark script file
+echo "
+\set aid random(1, 100000 * :scale)
+\set bid random(1, 1 * :scale)
+\set delta random(-5000, 5000)
+BEGIN;
+UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;
+SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
+UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;
+INSERT INTO pgbench_history (bid, aid, delta, mtime) VALUES (:bid, :aid, :delta, CURRENT_TIMESTAMP);
+END;
+" > benchmark_script.sql
+
+# Run the benchmark
+pgbench -h localhost -p 5432 -U postgres -d myDB -f benchmark_script.sql\
+	-D scale=100000 \
+	-j 4 -c 8 -T 60 \  # 4 threads, 8 clients, 60 seconds duration testing
+  	--no-vacuum --failures-detailed --log --max-tries=1000 --debug
+```
+
 
 ## 6. Deploy a PostgreSQL disk-spill monitoring system on EC2
 (Using Docker, Prometheus, Grafana, pg_exporter, and Slack alerts)
@@ -593,7 +706,7 @@ pg_stat_statements:
 
 ```
 
-##### roles/postgres_monitoring/tasks/main.yml (Ansible Role)
+##### roles/postgres_monitoring/tasks/main.yml (Ansible Tasks/Playbook)
 ```yaml
 - name: Ensure Docker Compose is present
   apt:
@@ -764,15 +877,15 @@ set -e
 
 # Install Docker & Compose
 apt update
-apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor \
-  > /usr/share/keyrings/docker-archive-keyring.gpg
+apt install -y apt-transport-https ca-certificates curl gnupg lsb-release 
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor \	
+  > /usr/share/keyrings/docker-archive-keyring.gpg 						
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
   https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-  > /etc/apt/sources.list.d/docker.list
+  > /etc/apt/sources.list.d/docker.list 
 
 apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-compose
+apt install -y docker-ce docker-ce-cli containerd.io docker-compose 
 
 # Copy config files into /opt/spill-monitoring
 cd /opt
