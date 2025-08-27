@@ -91,8 +91,15 @@ choco uninstall postgresql --version <version> # Windows
 
 ### Create and Manage Clusters
 ```bash
+-- Turn off the pager: 'more' is not recognized as an internal or external command
+$env:PAGER = ""
+\pset pager off
+
 # List all PostgreSQL clusters
-pg_lsclusters
+-- Connect to Post-- Connect to PostgreSQL and check current settings
+SHOW listen_addresses;
+SELECT inet_server_addr();
+SELECT inet_server_port();
 
 # Create a new PostgreSQL cluster
 pg_createcluster <version> <cluster_name>
